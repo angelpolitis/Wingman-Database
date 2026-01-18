@@ -1,9 +1,9 @@
 <?php
     /*/
-	 * Project Name:    Wingman — Database — Plan Compiler
+	 * Project Name:    Wingman — Database — Query Planner
 	 * Created by:      Angel Politis
 	 * Creation Date:   Jan 02 2026
-	 * Last Modified:   Jan 17 2026
+	 * Last Modified:   Jan 18 2026
     /*/
 
     # Use the Database.Compilers namespace.
@@ -33,7 +33,7 @@
      * @author Angel Politis <info@angelpolitis.com>
      * @since 1.0
      */
-    class PlanCompiler {
+    class QueryPlanner {
         /**
          * Creates a table node from a source, which can be a QueryBuilder, PlanNode or TableIdentifier.
          * @param mixed $source The source, either a QueryBuilder, PlanNode or TableIdentifier.
