@@ -3,7 +3,7 @@
      * Project Name:    Wingman — Database — Plan Analyser
      * Created by:      Angel Politis
      * Creation Date:   Jan 07 2026
-     * Last Modified:   Jan 17 2026
+     * Last Modified:   Jan 18 2026
     /*/
 
     # Use the Database.Analysis namespace.
@@ -41,12 +41,6 @@
      */
     class PlanAnalyser {
         /**
-         * The SQL dialect used by an analyser.
-         * @var SQLDialect
-         */
-        protected SQLDialect $dialect;
-
-        /**
          * The root node of the query plan being analysed.
          * @var PlanNode
          */
@@ -68,8 +62,7 @@
          * Creates a new plan analyser.
          * @param PlanNode $plan The root node of the query plan.
          */
-        public function __construct (SQLDialect $dialect, PlanNode $plan) {
-            $this->dialect = $dialect;
+        public function __construct (PlanNode $plan) {
             $this->plan = $plan;
             $this->registry = new SplObjectStorage();
         }
@@ -428,7 +421,7 @@
          * Recursively extracts literal values from an expression.
          * @param mixed $expression The expression to extract literals from.
          * @param SplObjectStorage $visited A registry of visited expressions to avoid cycles.
-         * @return Binding[] An array of extracted bindings.
+         * @return (Binding|BindingGroup)[] An array of extracted bindings and binding groups.
          */
         protected function extractLiterals (mixed $expression, SplObjectStorage $visited) : array {
             if ($expression === null) return [];
@@ -543,11 +536,13 @@
 
         /**
          * Gets all bindings in the lexical order defined by a plan analyser's SQL dialect.
+         * @param SQLDialect|string $dialect The SQL dialect or its class name.
          * @return Binding[] An array of bindings in the order defined by the SQL dialect.
          */
-        public function getBindings () : array {
+        public function getBindings (SQLDialect|string $dialect) : array {
+            $dialect = ($dialect instanceof SQLDialect) ? $dialect : new $dialect();
             $group = $this->getBindingTree();
-            return $group->flatten($this->dialect->getOrderForNode($this->plan), $this->dialect->getSelectOrder());
+            return $group->flatten($dialect->getOrderForNode($this->plan), $dialect->getSelectOrder());
         }
         
         /**
@@ -557,9 +552,7 @@
         public function getBindingTree () : BindingGroup {
             $rootGroup = new BindingGroup();
             $visited = new SplObjectStorage();
-            
             $this->collectLexicalBindings($this->plan, $rootGroup, $visited);
-            
             return $rootGroup;
         }
 
