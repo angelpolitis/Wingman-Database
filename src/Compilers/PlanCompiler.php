@@ -1,10 +1,9 @@
 <?php
-
     /*/
-	 * Project Name:    Wingman — Database — SQL Compiler
+	 * Project Name:    Wingman — Database — Plan Compiler
 	 * Created by:      Angel Politis
 	 * Creation Date:   Dec 27 2025
-	 * Last Modified:   Jan 17 2026
+	 * Last Modified:   Jan 18 2026
     /*/
 
     # Use the Database.Compilers namespace.
@@ -12,106 +11,66 @@
 
     # Import the following classes to the current scope.
     use InvalidArgumentException;
-    use RuntimeException;
     use SplObjectStorage;
-    use Wingman\Database\Interfaces\PlanNode;
-    use Wingman\Database\Plan\HavingNode;
     use Wingman\Database\Analysis\PlanWalker;
     use Wingman\Database\Enums\Component;
-    use Wingman\Database\Expressions\{
-        AggregateExpression, ComparisonExpression, InExpression, BooleanExpression,
-        CaseExpression, ColumnIdentifier, ExistsExpression, JoinExpression, LiteralExpression, NullExpression,
-        Predicate, QueryExpression, RawExpression, TableIdentifier, WindowExpression, OrderExpression
-    };
-    use Wingman\Database\Interfaces\{Aliasable, Conjunctive, Expression, SQLDialect};
-    use Wingman\Database\Plan\{
-        SourceNode, FilterNode, ProjectNode, JoinNode, 
-        SortNode, LimitNode, AggregateNode, CteNode,
-        ReturnNode, InsertNode, UpdateNode, DeleteNode,
-        LockNode, NullNode, SetOperationNode, UpsertNode
-    };
+    use Wingman\Database\Expressions\QueryExpression;
+    use Wingman\Database\Expressions\RawExpression;
+    use Wingman\Database\Interfaces\Conjunctive;
+    use Wingman\Database\Interfaces\Expression;
+    use Wingman\Database\Interfaces\PlanNode;
+    use Wingman\Database\Interfaces\SQLDialect;
+    use Wingman\Database\Plan\AggregateNode;
+    use Wingman\Database\Plan\CteNode;
+    use Wingman\Database\Plan\DeleteNode;
+    use Wingman\Database\Plan\FilterNode;
+    use Wingman\Database\Plan\HavingNode;
+    use Wingman\Database\Plan\InsertNode;
+    use Wingman\Database\Plan\JoinNode;
+    use Wingman\Database\Plan\LimitNode;
+    use Wingman\Database\Plan\LockNode;
+    use Wingman\Database\Plan\NullNode;
+    use Wingman\Database\Plan\ProjectNode;
+    use Wingman\Database\Plan\ReturnNode;
+    use Wingman\Database\Plan\SetOperationNode;
+    use Wingman\Database\Plan\SortNode;
+    use Wingman\Database\Plan\SourceNode;
+    use Wingman\Database\Plan\UpdateNode;
+    use Wingman\Database\Plan\UpsertNode;
 
     /**
-     * A SQL compiler that converts a query plan into a SQL string.
+     * Compiles a query plan into SQL.
      * @package Wingman\Database\Compilers
      * @author Angel Politis <info@angelpolitis.com>
      * @since 1.0
      */
-    class SQLCompiler {
+    class PlanCompiler {
         /**
          * SQL dialect for database-specific syntax.
          */
         protected SQLDialect $dialect;
 
         /**
-         * The walker of a compiler.
+         * The walker of a plan compiler.
          * @var PlanWalker
          */
         protected PlanWalker $walker;
 
         /**
-         * The compiled SQL string.
+         * The expression compiler of a plan compiler.
+         * @var ExpressionCompiler
          */
-        protected string $sql = "";
+        protected ExpressionCompiler $expressionCompiler;
 
         /**
-         * Creates a new compiler.
+         * Creates a new plan compiler.
          * @param SQLDialect $dialect The SQL dialect to use.
          */
         public function __construct (SQLDialect $dialect) {
             $this->dialect = $dialect;
             $this->walker = new PlanWalker();
-        }
-
-        ######################################################################
-        ########################## COMPILER METHODS ##########################
-        ######################################################################
-
-        /**
-         * Compiles an AggregateExpression into SQL.
-         * @param AggregateExpression $expression The aggregate expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileAggregate (AggregateExpression $expression) : string {
-            $function = $expression->getFunction();
-            $operands = array_map(fn ($operand) => $this->compileExpression($operand), $expression->getExpressions());
-            
-            $list = implode(", ", $operands);
-            
-            if ($expression->isDistinct()) {
-                $list = "DISTINCT " . $list;
-            }
-            
-            return "{$function}({$list})";
-        }
-
-        /**
-         * Compiles a boolean expression into SQL.
-         * @param Expression $expression The boolean expression.
-         * @param bool $aliasAllowed Whether to include aliases in the output.
-         * @param string|null $parentConjunction The parent conjunction for nesting logic.
-         * @return string The SQL fragment.
-         */
-        protected function compileBooleanExpression (Expression $expression, bool $aliasAllowed = false, ?string $parentConjunction = null) : string {
-            if (!($expression instanceof BooleanExpression)) {
-                return $this->compileExpression($expression, $aliasAllowed);
-            }
-        
-            $parts = [];
-            $currentConjunction = strtoupper($expression->getConjunction());
-            $subExpressions = $expression->getExpressions();
-        
-            foreach ($subExpressions as $subExpr) {
-                $parts[] = $this->compileBooleanExpression($subExpr, $aliasAllowed, $currentConjunction);
-            }
-        
-            $sql = implode(" {$currentConjunction} ", $parts);
-        
-            if (!empty($parentConjunction) && $currentConjunction !== $parentConjunction) {
-                return "({$sql})";
-            }
-            
-            return count($subExpressions) > 1 ? "({$sql})" : $sql;
+            $this->expressionCompiler = new ExpressionCompiler($dialect, $this);
+            $this->dialect->setCompiler($this->expressionCompiler);
         }
 
         /**
@@ -134,61 +93,6 @@
         }
 
         /**
-         * Compiles a CaseExpression into SQL.
-         * @param CaseExpression $expression The case expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileCaseExpression (CaseExpression $expression) : string {
-            $parts = [];
-            $subject = $expression->getSubject();
-            $subjectSql = $subject ? $this->compileExpression($subject) : null;
-            $caseHeader = $subjectSql ? "CASE $subjectSql" : "CASE";
-            $parts[] = $caseHeader;
-
-            $conditions = $expression->getConditions();
-            $results = $expression->getResults();
-
-            foreach ($conditions as $index => $condition) {
-                $conditionSql = $this->compileExpression($condition);
-                $resultSql = $this->compileExpression($results[$index]);
-                $parts[] = "WHEN {$conditionSql} THEN {$resultSql}";
-            }
-
-            if ($default = $expression->getDefault()) {
-                $defaultSql = $this->compileExpression($default);
-                $parts[] = "ELSE {$defaultSql}";
-            }
-
-            $parts[] = "END";
-
-            return implode(' ', $parts);
-        }
-
-        /**
-         * Compiles a ColumnIdentifier into SQL.
-         * @param ColumnIdentifier $column The column identifier.
-         * @return string The SQL fragment.
-         */
-        protected function compileColumn (ColumnIdentifier $column) : string {
-            $table = $column->getTable();
-            $name = $column->getName();
-            $table = $table ? $this->dialect->quoteIdentifier($table) . '.' : "";
-            $name = $name === '*' ? '*' : $this->dialect->quoteIdentifier($name);
-            return $table . $name;
-        }
-
-        /**
-         * Compiles a ComparisonExpression into SQL.
-         * @param ComparisonExpression $expression The comparison expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileComparisonExpression (ComparisonExpression $expression) : string {
-            $operator = strtoupper($expression->getOperator());
-            $operands = array_map(fn ($operand) => $this->compileExpression($operand), $expression->getExpressions());
-            return implode(" {$operator} ", $operands);
-        }
-
-        /**
          * Compiles a list of conditions into a SQL fragment.
          * @param array $conditions List of condition expressions.
          * @return string The compiled SQL fragment.
@@ -196,7 +100,7 @@
         protected function compileConditions (array $conditions) : string {
             $parts = [];
             foreach ($conditions as $i => $condition) {
-                $sql = $this->compileExpression($condition);
+                $sql = $this->expressionCompiler->compile($condition);
                 
                 if ($i === 0) {
                     $parts[] = $sql;
@@ -226,12 +130,12 @@
                 $name = $this->dialect->quoteIdentifier($name);
 
                 $anchor = $expression->getQuery();
-                $anchorSql = $this->compileSubquery($anchor);
+                $anchorSql = $this->expressionCompiler->compileSubquery($anchor);
 
                 $recursive = $expression->getRecursivePart();
 
                 if ($recursive) {
-                    $recursiveSql = $this->compileSubquery($recursive);
+                    $recursiveSql = $this->expressionCompiler->compileSubquery($recursive);
                     $unionType = $expression->getUnionType();
                     $definitions[] = "$name AS ($anchorSql $unionType $recursiveSql)";
                 }
@@ -281,75 +185,6 @@
         }
 
         /**
-         * Compiles an EXISTS expression into SQL.
-         * @param ExistsExpression $expression The EXISTS expression.
-         * @return string The compiled SQL fragment.
-         * @throws RuntimeException If the subquery is not a PlanNode.
-         */
-        protected function compileExistsExpression (ExistsExpression $expression) : string {
-            $query = $expression->getValue();
-            $subPlan = $query->getPlan();
-        
-            if (!($subPlan instanceof PlanNode)) {
-                throw new RuntimeException("ExistsExpression must contain a compiled PlanNode.");
-            }
-    
-            $op = $expression->isNegated() ? "NOT EXISTS" : "EXISTS";
-            
-            $subSql = $this->compileSubquery($query);
-            return "{$op} ({$subSql})";
-        }
-
-        /**
-         * Compiles an expression into a SQL fragment.
-         * @param Expression $expression The expression to compile.
-         * @param bool $aliasAllowed Whether to include aliases in the output.
-         * @return string The compiled SQL fragment.
-         * @throws RuntimeException If the expression type is unknown.
-         */
-        protected function compileExpression (Expression $expression, bool $aliasAllowed = false) : string {
-            $string = match (true) {
-                $expression instanceof QueryExpression => $this->compileSubquery($expression),
-                $expression instanceof ColumnIdentifier => $this->compileColumn($expression),
-                $expression instanceof TableIdentifier => $this->compileTable($expression),
-                $expression instanceof LiteralExpression => $this->compileLiteral($expression),
-                $expression instanceof AggregateExpression => $this->compileAggregate($expression),
-                $expression instanceof RawExpression => $this->compileRawExpression($expression),
-                $expression instanceof ComparisonExpression => $this->compileComparisonExpression($expression),
-                $expression instanceof ExistsExpression => $this->compileExistsExpression($expression),
-                $expression instanceof BooleanExpression => $this->compileBooleanExpression($expression),
-                $expression instanceof InExpression => $this->compileInExpression($expression),
-                $expression instanceof CaseExpression => $this->compileCaseExpression($expression),
-                $expression instanceof NullExpression => $this->compileNullExpression($expression),
-                default => throw new RuntimeException("Unknown Expression type: " . get_class($expression))
-            };
-            if ($aliasAllowed && $expression instanceof Aliasable && $alias = $expression->getAlias()) {
-                return "{$string} AS " . $this->dialect->quoteIdentifier($alias);
-            }
-            return $string;
-        }
-
-        /**
-         * Compiles an InExpression into SQL.
-         * @param InExpression $expr The IN expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileInExpression (InExpression $expr) : string {
-            $column = $this->dialect->quoteIdentifier($expr->getOperand());
-            $values = $expr->getValue();
-            $op = $expr->isNegated() ? "NOT IN" : "IN";
-        
-            if ($values instanceof QueryExpression) {
-                $subSql = $this->compileExpression($values);
-                return "{$column} {$op} ({$subSql})";
-            }
-        
-            $placeholders = implode(", ", array_fill(0, count($values), '?'));
-            
-            return "{$column} {$op} ({$placeholders})";
-        }
-
-        /**
          * Compiles a list of groupings into a SQL fragment.
          * @param array $groupings List of grouping expressions.
          * @return string The compiled SQL fragment.
@@ -357,9 +192,23 @@
         protected function compileGroupings (array $groupings) : string {
             $parts = [];
             foreach ($groupings as $grouping) {
-                $parts[] = $this->compileExpression($grouping);
+                $parts[] = $this->expressionCompiler->compile($grouping);
             }
             return implode(", ", $parts);
+        }
+
+        /**
+         * Compiles multiple JOIN clauses into SQL.
+         * @param array $expressions List of join definitions.
+         * @param SplObjectStorage $joinFilterMap Mapping of joins to their filters.
+         * @return string The compiled JOIN SQL fragments.
+         */
+        protected function compileJoins (array $expressions, SplObjectStorage $joinFilterMap) : string {
+            $parts = [];
+            foreach ($expressions as $expression) {
+                $parts[] = $this->expressionCompiler->compileJoinExpression($expression, $joinFilterMap[$expression] ?? []);
+            }
+            return implode(' ', $parts);
         }
 
         /**
@@ -392,57 +241,6 @@
         }
 
         /**
-         * Compiles a JOIN clause from the join bucket entry.
-         * @param JoinExpression $join The join definition.
-         * @param Predicate[] $predicates List of predicates associated with the join.
-         * @return string The compiled JOIN SQL fragment.
-         */
-        protected function compileJoin (JoinExpression $join, array $predicates) : string {
-            $type = $join->getType()->value;
-            $right = $join->getSource();
-            $conditions = $join->getConditions();
-            $conjunction = $join->getConjunction();
-
-            # 1. Compile the right-hand source (table or subquery).
-            if ($right instanceof TableIdentifier) {
-                $sourceSQL = $this->compileExpression($right, true);
-            }
-            elseif ($right instanceof QueryExpression) {
-                $sourceSQL = $this->compileSubquery($right);
-                $alias = $join->getJoinedTable() ?: $right->getAlias();
-                if ($alias) {
-                    $sourceSQL .= " AS " . $this->dialect->quoteIdentifier($alias);
-                }
-            }
-
-            # 2. Compile the conditions.
-            $conditionSQLs = [];
-            foreach ($conditions as $condition) {
-                $conditionSQLs[] = $this->compileExpression($condition);
-            }
-            foreach ($predicates as $predicate) {
-                $conditionSQLs[] = $this->compileExpression($predicate);
-            }
-            $onClause = !empty($conditionSQLs) ? " ON " . implode(" {$conjunction} ", $conditionSQLs) : "";
-
-            return "{$type} JOIN {$sourceSQL}{$onClause}";
-        }
-
-        /**
-         * Compiles multiple JOIN clauses into SQL.
-         * @param array $expressions List of join definitions.
-         * @param SplObjectStorage $joinFilterMap Mapping of joins to their filters.
-         * @return string The compiled JOIN SQL fragments.
-         */
-        protected function compileJoins (array $expressions, SplObjectStorage $joinFilterMap) : string {
-            $parts = [];
-            foreach ($expressions as $expression) {
-                $parts[] = $this->compileJoin($expression, $joinFilterMap[$expression] ?? []);
-            }
-            return implode(' ', $parts);
-        }
-
-        /**
          * Compiles LIMIT and OFFSET into SQL.
          * @param array $limitInfo Array with limit and offset values.
          * @return string The SQL fragment.
@@ -450,31 +248,7 @@
         protected function compileLimitOffset (array $limitInfo) : string {
             $limit = $limitInfo[0] ?? null;
             $offset = $limitInfo[1] ?? 0;
-            return $this->dialect->renderLimitOffset($limit, $offset);
-        }
-
-        /**
-         * Compiles a LiteralExpression into SQL.
-         * @param LiteralExpression $expression The literal expression.
-         * @param bool $aliasAllowed Whether to include aliases in the output.
-         * @return string The SQL fragment.
-         */
-        protected function compileLiteral (LiteralExpression $expression, bool $aliasAllowed = false) : string {
-            if ($aliasAllowed && $alias = $expression->getAlias()) {
-                return "? AS " . $this->dialect->quoteIdentifier($alias);
-            }
-            return "?";
-        }
-
-        /**
-         * Compiles a NullExpression into SQL.
-         * @param NullExpression $expr The NULL expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileNullExpression (NullExpression $expr) : string {
-            $column = $this->dialect->quoteIdentifier($expr->getOperand());
-            $op = $expr->isNegated() ? "IS NOT NULL" : "IS NULL";
-            return "{$column} {$op}";
+            return $this->dialect->compileLimitOffset($limit, $offset);
         }
 
         /**
@@ -495,8 +269,8 @@
             $parts = [];
             /** @var OrderExpression */
             foreach ($orderings as $ordering) {
-                $parts[] = $this->dialect->renderOrderPrecedence(
-                    $this->compileExpression($ordering->getTarget()), 
+                $parts[] = $this->dialect->compileOrder(
+                    $this->expressionCompiler->compile($ordering->getTarget()), 
                     $ordering->getDirection(), 
                     $ordering->getPrecedence()
                 );
@@ -514,21 +288,12 @@
             
             /** @var Expression */
             foreach ($this->walker->getBucket(Component::Projections) as $expression) {
-                $projections[] = $this->compileExpression($expression, true);
+                $projections[] = $this->expressionCompiler->compile($expression, true);
             }
             
             $projections = empty($projections) ? '*' : implode(", ", $projections);
 
             return $selectType . $projections;
-        }
-
-        /**
-         * Compiles a raw expression into SQL.
-         * @param RawExpression $expr The raw expression.
-         * @return string The SQL fragment.
-         */
-        protected function compileRawExpression (RawExpression $expr) : string {
-            return $expr->getValue();
         }
 
         /**
@@ -598,7 +363,7 @@
             
             if (!$this->walker->isEmpty(Component::Lock)) {
                 [$type, $timeout, $lockedSkipped] = $this->walker->getBucket(Component::Lock);
-                $parts[] = $this->dialect->renderLock($type, $timeout, $lockedSkipped);
+                $parts[] = $this->dialect->compileLock($type, $timeout, $lockedSkipped);
             }
             
             return implode(' ', $parts);
@@ -621,11 +386,7 @@
          * @return string The compiled FROM clause.
          */
         protected function compileSources () : string {
-            $sources = [];
-            foreach ($this->walker->getBucket(Component::Sources) as $source) {
-                $sources[] = $this->compileExpression($source, true);
-            }
-            return "FROM " . implode(", ", $sources);
+            return $this->expressionCompiler->compileSourceExpressions($this->walker->getBucket(Component::Sources));
         }
 
         /**
@@ -635,30 +396,6 @@
          */
         protected function compileSubplan (PlanNode $plan) : string {
             return (new static($this->dialect))->compile($plan);
-        }
-
-        /**
-         * Compiles a subquery into SQL.
-         * @param QueryExpression $query The subquery expression.
-         * @return string The compiled SQL fragment.
-         * @param bool $aliasAllowed Whether to include aliases in the output.
-         */
-        protected function compileSubquery (QueryExpression $query, bool $aliasAllowed = false) : string {
-            $sql = $this->compileSubplan($query->getPlan());
-            if ($aliasAllowed && ($alias = $query->getAlias())) {
-                return "({$sql}) AS " . $this->dialect->quoteIdentifier($alias);
-            }
-            return $sql;
-        }
-
-        /**
-         * Compiles a table identifier into SQL.
-         * @param TableIdentifier $table The table identifier.
-         * @param bool $includeAlias Whether to include the alias in the output.
-         * @return string The SQL fragment.
-         */
-        protected function compileTable (TableIdentifier $table) : string {
-            return $this->dialect->quoteIdentifier($table->getName());
         }
 
         /**
@@ -741,7 +478,7 @@
                 $payload["update"][] = $col;
                 
                 if ($val instanceof RawExpression) {
-                    $payload["update_values"][$col] = $this->dialect->resolveConflictReference($val->getValue());
+                    $payload["update_values"][$col] = $this->dialect->compileConflictReference($val->getValue());
                 }
                 else {
                     $payload["update_values"][$col] = '?';
@@ -777,6 +514,15 @@
                 $node instanceof NullNode => $this->compileNull($node),
                 default => throw new InvalidArgumentException("Unknown node type: " . get_class($node))
             };
+        }
+
+        /**
+         * Creates a new plan compiler with the specified SQL dialect.
+         * @param SQLDialect $dialect The SQL dialect to use.
+         * @return static A new instance of PlanCompiler.
+         */
+        public static function withDialect (SQLDialect $dialect) : static {
+            return new static($dialect);
         }
     }
 ?>
