@@ -3,7 +3,7 @@
 	 * Project Name:    Wingman — Database — Table Identifier
 	 * Created by:      Angel Politis
 	 * Creation Date:   Jan 04 2026
-	 * Last Modified:   Jan 07 2026
+	 * Last Modified:   Jan 18 2026
     /*/
 
     # Use the Database.Expressions namespace.
@@ -139,5 +139,14 @@
          */
         public function isSargable () : bool {
             return false;
+        }
+
+        /**
+         * Creates a new table identifier with the specified schema.
+         * @param string|null $schema The schema to set.
+         * @return TableIdentifier A new table identifier with the specified schema.
+         */
+        public function withSchema (?string $schema) : TableIdentifier {
+            return new static($this->name, $this->alias, $schema);
         }
     }
