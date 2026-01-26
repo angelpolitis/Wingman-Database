@@ -3,7 +3,7 @@
 	 * Project Name:    Wingman — Database — SQL Dialect
 	 * Created by:      Angel Politis
 	 * Creation Date:   Dec 26 2025
-	 * Last Modified:   Jan 22 2026
+	 * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database.Interfaces namespace.
@@ -348,9 +348,13 @@
          * @param string|TableIdentifier $table The name of the table to select from.
          * @param array $columns The list of columns to select.
          * @param Expression|null $filter The filter expression for the WHERE clause.
+         * @param array|string|int|null $order The order conditions (optional).
+         * @param int|null $limit The maximum number of rows to return (optional).
+         * @param int $offset The number of rows to skip (optional).
+         * @param LockType $lock The type of lock to apply (optional).
          * @return CompiledQuery The compiled SQL SELECT statement.
          */
-        public function compileSelect (string|TableIdentifier $table, array $columns = ['*'], ?Expression $filter = null) : CompiledQuery;
+        public function compileSelect (string|TableIdentifier $table, array $columns = ['*'], ?Expression $filter = null, array|string|int|null $order = null, ?int $limit = null, int $offset = 0, LockType $lock = LockType::None) : CompiledQuery;
 
         /**
          * Builds a USE DATABASE statement.
@@ -527,6 +531,12 @@
          * @return bool Whether the dialect supports FULL OUTER JOINs.
          */
         public function supportsFullOuterJoin () : bool;
+        
+        /**
+        * Indicates whether the dialect supports LOCK clauses.
+        * @return bool Whether the dialect supports LOCK clauses.
+        */
+        public function supportsLocking () : bool;
         
         /**
          * Indicates whether a dialect supports renaming columns.

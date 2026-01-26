@@ -3,13 +3,14 @@
 	 * Project Name:    Wingman — Database — MySQL Dialect
 	 * Created by:      Angel Politis
 	 * Creation Date:   Dec 26 2025
-	 * Last Modified:   Jan 22 2026
+	 * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database.Dialects namespace.
     namespace Wingman\Database\Dialects;
 
     # Import the following classes to the current scope.
+    use InvalidArgumentException;
     use LogicException;
     use SplObjectStorage;
     use Wingman\Database\Compilers\ExpressionCompiler;
@@ -31,6 +32,7 @@
     use Wingman\Database\Plan\InsertNode;
     use Wingman\Database\Plan\UpsertNode;
     use Wingman\Database\Enums\ReferentialAction;
+    use Wingman\Database\Expressions\LiteralExpression;
     use Wingman\Database\Traits\Caster;
 
     /**
@@ -755,9 +757,13 @@
          * @param string|TableIdentifier $table The name of the table to select from.
          * @param array $columns The list of columns to select.
          * @param Expression|null $filter The filter expression for the WHERE clause.
+         * @param array|string|int|null $order The order conditions (optional).
+         * @param int|null $limit The maximum number of rows to return (optional).
+         * @param int $offset The number of rows to skip (optional).
+         * @param LockType $lock The type of lock to apply (optional).
          * @return CompiledQuery The compiled SQL SELECT statement.
          */
-        public function compileSelect (string|TableIdentifier $table, array $columns = ['*'], ?Expression $filter = null) : CompiledQuery {
+        public function compileSelect (string|TableIdentifier $table, array $columns = ['*'], ?Expression $filter = null, array|string|int|null $order = null, ?int $limit = null, int $offset = 0, LockType $lock = LockType::None) : CompiledQuery {
             if ($table instanceof TableIdentifier) {
                 $table = $table->getQualifiedName();
             }
@@ -768,6 +774,50 @@
         
             if ($filter !== null) {
                 $sql .= $filter ? " WHERE " . $this->compiler->compile($filter) : "";
+            }
+
+            if (!empty($order)) {
+                $direction = OrderDirection::Ascending;
+                $nulls = NullPrecedence::None;
+                $specs = [];
+
+                # 1. Handle array input.
+                if (is_array($order)) {
+                    foreach ($order as $col => $dir) {
+                        # If $dir is an array, it might be [OrderDirection, NullPrecedence].
+                        if (is_array($dir)) {
+                            $specs[] = [$col, $dir[0] ?? $direction, $dir[1] ?? $nulls];
+                        }
+                        else $specs[] = [$col, $dir, $nulls];
+                    }
+                } 
+                # 2. Handle single column/expression input.
+                else $specs[] = [$order, $direction, $nulls];
+
+                $orderClauses = [];
+                foreach ($specs as [$target, $dir, $precedence]) {
+                    $normalisedTarget = match (true) {
+                        $target instanceof Expression => $target,
+                        is_int($target) => new LiteralExpression($target),
+                        is_string($target) => ColumnIdentifier::from($target),
+                        default => throw new InvalidArgumentException("Invalid order by target.")
+                    };
+                    $expression = $this->compiler->compile($normalisedTarget);
+                    $dir = OrderDirection::resolve($dir);
+                    $precedence = NullPrecedence::resolve($precedence);
+                    $orderClauses[] = $this->compileOrder($expression, $dir, $precedence);
+                }
+                $sql .= " ORDER BY " . implode(", ", $orderClauses);
+            }
+
+            $limitOffsetSql = $this->compileLimitOffset($limit, $offset);
+
+            if (!empty($limitOffsetSql)) {
+                $sql .= " " . $limitOffsetSql;
+            }
+
+            if ($lock !== LockType::None) {
+                $sql .= " " . $this->compileLock($lock, null, false);
             }
 
             return new CompiledQuery($sql);
@@ -1241,6 +1291,14 @@
          */
         public function supportsFullOuterJoin () : bool {
             return false;
+        }
+
+        /**
+         * Indicates whether the dialect supports LOCK clauses.
+         * @return true Because MySQL supports LOCK clauses.
+         */
+        public function supportsLocking () : bool {
+            return true;
         }
         
         /**
