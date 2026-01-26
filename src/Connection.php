@@ -3,7 +3,7 @@
      * Project Name:    Wingman — Database — Connection
      * Created by:      Angel Politis
      * Creation Date:   Dec 29 2025
-     * Last Modified:   Jan 20 2026
+     * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database namespace.
@@ -18,6 +18,7 @@
     use Wingman\Database\Compilers\PlanCompiler;
     use Wingman\Database\Enums\IndexAlgorithm;
     use Wingman\Database\Enums\IndexType;
+    use Wingman\Database\Enums\LockType;
     use Wingman\Database\Enums\ReferentialAction;
     use Wingman\Database\Expressions\ColumnIdentifier;
     use Wingman\Database\Expressions\TableIdentifier;
@@ -102,7 +103,7 @@
             $this->compiler = new PlanCompiler($this->dialect);
             $this->activeDatabase = $this->driver->getDatabase();
         }
-
+        
         /**
          * Destroys the database connection.
          */
@@ -124,7 +125,7 @@
             foreach ($rows as $row) {
                 foreach ($row as $value) {
                     $size += match (true) {
-                        is_string($value) => strlen($value),
+                        is_string($value) => mb_strlen($value, "8bit"),
                         is_array($value)  => strlen(json_encode($value)), # JSON estimate
                         is_null($value)   => 4,  # "NULL"
                         is_bool($value)   => 1,  # "1" or "0"
@@ -193,7 +194,11 @@
                 $affected = $this->driver->execute($query, $bindings);
                 if ($affected === 0) return [];
                 $selectQuery = $this->dialect->compileSelect($table, $returnColumns, $filter);
-                return $this->driver->fetchAll($selectQuery->getQuery(), $selectQuery->getBindings($this->dialect));
+                $sql = $selectQuery->getQuery();
+                if ($this->dialect->supportsLocking()) {
+                    $sql .= " " . $this->dialect->compileLock(LockType::Exclusive, null, false);
+                }
+                return $this->driver->fetchAll($sql, $selectQuery->getBindings($this->dialect));
             });
         }
         
@@ -373,21 +378,21 @@
             $dialect = $this->getDialect();
             
             $stream = fopen("php://temp/maxmemory:5242880", "w+"); 
-
+            
             try {
-                                foreach ($rows as $row) {
-// Use dialect to format the row for CSV compatibility
+                foreach ($rows as $row) {
+                    // Use dialect to format the row for CSV compatibility
                     $formattedRow = array_map(function ($v) use ($dialect) {
                         if ($v === null) return $dialect->getNullInternal();
                         if (is_bool($v)) return $v ? '1' : '0';
                         return $v;
                     }, $row);
-
+                    
                     fputcsv($stream, $formattedRow);
                 }
                 
                 rewind($stream);
-
+        
                 return $this->transact(function () use ($stream, $table, $fields) {
                     $this->driver->prepareForBulkLoad();
                     return $this->driver->executeBulkStream($table, $stream, $fields);
@@ -804,12 +809,33 @@
          * @param string|TableIdentifier $table The table.
          * @param array $filter The filter conditions.
          * @param array $columns The columns to select.
+         * @param array|null $order The order conditions (optional).
+         * @param int|null $limit The maximum number of rows to return (optional).
+         * @param int $offset The number of rows to skip (optional).
+         * @param LockType $lock The lock type (optional).
          * @return array The selected rows.
          */
-        public function select (string|TableIdentifier $table, array $filter = [], array $columns = ['*']) : array {
+        public function select (string|TableIdentifier $table, array $filter = [], array $columns = ['*'], ?array $order = null, ?int $limit = null, int $offset = 0, LockType $lock = LockType::None) : array {
             $filter = new Filter($filter);
-            $query = $this->dialect->compileSelect($table, $columns, $filter->getExpression());
+            $query = $this->dialect->compileSelect($table, $columns, $filter->getExpression(), $order, $limit, $offset, $lock);
             return $this->driver->fetchAll($query->getQuery(), $filter->getBindings($this->dialect));
+        }
+
+        /**
+         * Selects a single column from a table.
+         * @param string|TableIdentifier $table The table.
+         * @param string $column The column to select.
+         * @param array $filter The filter conditions.
+         * @param array|null $order The order conditions (optional).
+         * @param int|null $limit The maximum number of rows to return (optional).
+         * @param int $offset The number of rows to skip (optional).
+         * @param LockType $lock The lock type (optional).
+         * @return array The selected column values.
+         */
+        public function selectColumn (string|TableIdentifier $table, string $column, array $filter = [], ?array $order = null, ?int $limit = null, int $offset = 0, LockType $lock = LockType::None) : array {
+            $filter = new Filter($filter);
+            $query = $this->dialect->compileSelect($table, [$column], $filter->getExpression(), $order, $limit, $offset, $lock);
+            return $this->driver->fetchValues($query->getQuery(), $filter->getBindings($this->dialect, 0));
         }
         
         /**
@@ -867,27 +893,21 @@
                     $this->executeSavepoint("wingman_sp_{$this->transactionLevel}");
                 }
 
-                $result = $operation(
-                    fn (...$args) => $this->executeCommit(...$args),
-                    fn (...$args) => $this->executeRollback(...$args),
-                    fn (...$args) => $this->executeSavepoint(...$args)
-                );
+                $result = $operation($this);
 
                 # Only commit the root transaction.
                 if ($this->transactionLevel === 1) $this->executeCommit();
+
+                return $result;
             }
             catch (Throwable $e) {
                 $this->executeRollback();
-                
-                if ($throws) {
-                    $this->transactionLevel--;
-                    throw $e;
-                }
+                if ($throws) throw $e;
+                return false;
             }
-
-            $this->transactionLevel--;
-
-            return $result;
+            finally {
+                $this->transactionLevel = max(0, $this->transactionLevel - 1);
+            }
         }
 
         /**
