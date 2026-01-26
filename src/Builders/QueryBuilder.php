@@ -12,7 +12,7 @@
     # Import the following classes to the current scope.
     use InvalidArgumentException;
     use Wingman\Database\Interfaces\PlanNode;
-    use Wingman\Database\Compilers\PlanCompiler;
+    use Wingman\Database\Compilers\QueryPlanner;
     use Wingman\Database\Enums\JoinType;
     use Wingman\Database\Enums\LockType;
     use Wingman\Database\Enums\NullPrecedence;
@@ -234,7 +234,7 @@
          * @return PlanNode The compiled plan node.
          */
         public function getPlan () : PlanNode {
-            return (new PlanCompiler())->compile($this->state);
+            return (new QueryPlanner())->compile($this->state);
         }
 
         /**
