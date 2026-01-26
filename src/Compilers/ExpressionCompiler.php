@@ -3,7 +3,7 @@
 	 * Project Name:    Wingman — Database — Expression Compiler
 	 * Created by:      Angel Politis
 	 * Creation Date:   Jan 18 2026
-	 * Last Modified:   Jan 18 2026
+	 * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database.Compilers namespace.
@@ -12,6 +12,7 @@
     # Import the following classes to the current scope.
     use RuntimeException;
     use Wingman\Database\Expressions\AggregateExpression;
+    use Wingman\Database\Expressions\BetweenExpression;
     use Wingman\Database\Expressions\BooleanExpression;
     use Wingman\Database\Expressions\CaseExpression;
     use Wingman\Database\Expressions\ColumnIdentifier;
@@ -67,12 +68,13 @@
                 $expression instanceof ExistsExpression => $this->compileExistsExpression($expression),
                 $expression instanceof BooleanExpression => $this->compileBooleanExpression($expression),
                 $expression instanceof InExpression => $this->compileInExpression($expression),
+                $expression instanceof BetweenExpression => $this->compileBetweenExpression($expression),
                 $expression instanceof CaseExpression => $this->compileCaseExpression($expression),
                 $expression instanceof NullExpression => $this->compileNullExpression($expression),
                 default => throw new RuntimeException("Unknown Expression type: " . get_class($expression))
             };
             if ($aliasAllowed && $expression instanceof Aliasable && $alias = $expression->getAlias()) {
-                return "{$string} AS " . $this->dialect->quoteIdentifier($alias);
+                return "$string AS " . $this->dialect->quoteIdentifier($alias);
             }
             return $string;
         }
@@ -92,7 +94,26 @@
                 $list = "DISTINCT " . $list;
             }
             
-            return "{$function}({$list})";
+            return "$function($list)";
+        }
+
+        /**
+         * Compiles a BetweenExpression into SQL.
+         * @param BetweenExpression $expression The between expression.
+         * @param bool $aliasAllowed Whether to include aliases in the output.
+         * @return string The SQL fragment.
+         */
+        public function compileBetweenExpression (BetweenExpression $expression, bool $aliasAllowed = false) : string {
+            $operand = $this->compile($expression->getOperand());
+            $lower = $this->compile($expression->getMin());
+            $upper = $this->compile($expression->getMax());
+            $op = $expression->isNegated() ? "NOT BETWEEN" : "BETWEEN";
+            return $aliasAllowed
+                ? "($operand $op $lower AND $upper) AS `{$expression->getAlias()}`"
+                : "$operand $op $lower AND $upper";if ($values instanceof QueryExpression) {
+                $subSql = $this->compile($values);
+                return "$operand $op ($subSql)";
+            }
         }
         
         /**
@@ -115,13 +136,13 @@
                 $parts[] = $this->compileBooleanExpression($subExpr, $aliasAllowed, $currentConjunction);
             }
         
-            $sql = implode(" {$currentConjunction} ", $parts);
+            $sql = implode(" $currentConjunction ", $parts);
         
             if (!empty($parentConjunction) && $currentConjunction !== $parentConjunction) {
-                return "({$sql})";
+                return "($sql)";
             }
             
-            return count($subExpressions) > 1 ? "({$sql})" : $sql;
+            return count($subExpressions) > 1 ? "($sql)" : $sql;
         }
         
         /**
@@ -142,12 +163,12 @@
             foreach ($conditions as $index => $condition) {
                 $conditionSql = $this->compile($condition);
                 $resultSql = $this->compile($results[$index]);
-                $parts[] = "WHEN {$conditionSql} THEN {$resultSql}";
+                $parts[] = "WHEN $conditionSql THEN $resultSql";
             }
 
             if ($default = $expression->getDefault()) {
                 $defaultSql = $this->compile($default);
-                $parts[] = "ELSE {$defaultSql}";
+                $parts[] = "ELSE $defaultSql";
             }
 
             $parts[] = "END";
@@ -176,7 +197,7 @@
         public function compileComparisonExpression (ComparisonExpression $expression) : string {
             $operator = strtoupper($expression->getOperator());
             $operands = array_map(fn ($operand) => $this->compile($operand), $expression->getExpressions());
-            return implode(" {$operator} ", $operands);
+            return implode(" $operator ", $operands);
         }
 
         /**
@@ -196,7 +217,7 @@
             $op = $expression->isNegated() ? "NOT EXISTS" : "EXISTS";
             
             $subSql = $this->compileSubquery($query);
-            return "{$op} ({$subSql})";
+            return "$op ($subSql)";
         }
 
         /**
@@ -211,12 +232,12 @@
         
             if ($values instanceof QueryExpression) {
                 $subSql = $this->compile($values);
-                return "{$operand} {$op} ({$subSql})";
+                return "$operand $op ($subSql)";
             }
         
             $placeholders = implode(", ", array_fill(0, count($values), '?'));
             
-            return "{$operand} {$op} ({$placeholders})";
+            return "$operand $op ($placeholders)";
         }
         
         /**
@@ -253,7 +274,7 @@
             }
             $onClause = !empty($conditionSQLs) ? " ON " . implode(" {$conjunction} ", $conditionSQLs) : "";
 
-            return "{$type} JOIN {$sourceSQL}{$onClause}";
+            return "$type JOIN {$sourceSQL}{$onClause}";
         }
         
         /**
@@ -263,10 +284,11 @@
          * @return string The SQL fragment.
          */
         public function compileLiteral (LiteralExpression $expression, bool $aliasAllowed = false) : string {
+            $value = $expression->getValue() == null ? "NULL" : '?';
             if ($aliasAllowed && $alias = $expression->getAlias()) {
-                return "? AS " . $this->dialect->quoteIdentifier($alias);
+                return "$value AS " . $this->dialect->quoteIdentifier($alias);
             }
-            return "?";
+            return $value;
         }
 
         /**
@@ -277,7 +299,7 @@
         public function compileNullExpression (NullExpression $expr) : string {
             $column = $this->dialect->quoteIdentifier($expr->getOperand());
             $op = $expr->isNegated() ? "IS NOT NULL" : "IS NULL";
-            return "{$column} {$op}";
+            return "$column $op";
         }
 
         /**
@@ -311,7 +333,7 @@
         public function compileSubquery (QueryExpression $query, bool $aliasAllowed = false) : string {
             $sql = PlanCompiler::withDialect($this->dialect)->compile($query->getPlan());
             if ($aliasAllowed && ($alias = $query->getAlias())) {
-                return "({$sql}) AS " . $this->dialect->quoteIdentifier($alias);
+                return "($sql) AS " . $this->dialect->quoteIdentifier($alias);
             }
             return $sql;
         }

@@ -3,13 +3,15 @@
      * Project Name:    Wingman — Database — Expression Parser
      * Created by:      Angel Politis
      * Creation Date:   Jan 18 2026
-     * Last Modified:   Jan 20 2026
+     * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database namespace.
     namespace Wingman\Database;
 
     # Import the following classes to the current scope.
+    use InvalidArgumentException;
+    use Wingman\Database\Expressions\BetweenExpression;
     use Wingman\Database\Expressions\BooleanExpression;
     use Wingman\Database\Expressions\ColumnIdentifier;
     use Wingman\Database\Expressions\ComparisonExpression;
@@ -36,15 +38,31 @@
             $left = $this->parseValue($column, true);
             $operator = strtoupper($operator);
 
-            # 1. Special Case: NULL handling (converts = to IS and != to IS NOT)
+            # 1. Special Case: NULL handling (converts = to IS and != to IS NOT).
             if ($value === null) {
                 $op = ($operator === "!=" || $operator === "<>") ? "IS NOT" : "IS";
                 return new ComparisonExpression($left, $op, new LiteralExpression(null));
             }
 
-            # 2. Special Case: IN handling
-            if ($operator === "IN" || (is_array($value) && !isset($value["raw"]))) {
-                return new InExpression($left, array_map(fn($v) => $this->parseValue($v), (array)$value));
+            # 2. Special Case: binary operator handling.
+            $negated = false;
+            switch ($operator) {
+                case "NOT BETWEEN":
+                case "NOT IN":
+                    $negated = true;
+                case "BETWEEN":
+                case "IN":
+                    if (!is_array($value) || count($value) < 1) {
+                        $value = [$value];
+                    }
+                    if ($operator === "BETWEEN" || $operator === "NOT BETWEEN") {
+                        if (count($value) !== 2) {
+                            throw new InvalidArgumentException("The '$operator' operator requires exactly two values.");
+                        }
+                        return new BetweenExpression($left, $this->parseValue($value[0]), $this->parseValue($value[1]), $negated);
+                    }
+                    return new InExpression($left, array_map(fn ($v) => $this->parseValue($v), (array) $value));
+                    break;
             }
 
             # 3. General Case: Other comparisons.
@@ -97,7 +115,7 @@
          */
         public static function isOperator (mixed $value) : bool {
             if (!is_string($value)) return false;
-            $operators = ['=', "!=", "<>", '<', '>', "<=", ">=", "LIKE", "NOT LIKE", "IN", "NOT IN", "IS", "IS NOT"];
+            $operators = ['=', "!=", "<>", '<', '>', "<=", ">=", "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE", "IN", "NOT IN", "IS", "IS NOT", "BETWEEN", "NOT BETWEEN"];
             return in_array(strtoupper($value), $operators);
         }
 
@@ -108,29 +126,32 @@
          */
         public function parseCriteria (array ...$criteriaGroups) : Expression {
             $expressions = [];
-
+        
             foreach ($criteriaGroups as $criteria) {
+                $count = count($criteria);
+        
                 # 1. Handle the "Operator" case: ["@age", ">", "val"]
-                if (isset($criteria[0], $criteria[1], $criteria[2]) && static::isOperator($criteria[1])) {
+                if ($count === 3 && isset($criteria[0], $criteria[1]) && static::isOperator($criteria[1])) {
                     $expressions[] = $this->buildSegment($criteria[0], $criteria[1], $criteria[2]);
                     continue;
                 }
-
+        
                 # 2. Handle the "Short Equality" case: ["@age", 25]
-                if (isset($criteria[0]) && array_key_exists(1, $criteria) && count($criteria) === 2) {
+                if ($count === 2 && isset($criteria[0]) && array_key_exists(1, $criteria)) {
                     $expressions[] = $this->buildSegment($criteria[0], '=', $criteria[1]);
                     continue;
                 }
-
-                # 3. Handle the "Associative" case: ["status" => "active", "type" => 1]
+        
+                # 3. Handle the "Associative" case: ["status" => "active"]
                 foreach ($criteria as $column => $value) {
+                    if (is_int($column)) continue;
                     if (!str_starts_with($column, '@')) $column = "@$column";
                     $expressions[] = $this->buildSegment($column, '=', $value);
                 }
             }
-
+        
             if (count($expressions) === 1) return $expressions[0];
-
+        
             return new BooleanExpression($expressions, "AND");
         }
     }

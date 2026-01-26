@@ -51,7 +51,9 @@
             $results = [];
 
             if ($expression instanceof LiteralExpression) {
-                $results[] = new Binding($expression->getValue());
+                if ($expression->getValue() !== null) {
+                    $results[] = new Binding($expression->getValue());
+                }
             } 
             elseif ($expression instanceof QueryExpression) {
                 $planAnalyser = new PlanAnalyser($expression->getPlan());
