@@ -3,7 +3,7 @@
      * Project Name:    Wingman — Database — PDO Driver
      * Created by:      Angel Politis
      * Creation Date:   Dec 26 2025
-     * Last Modified:   Jan 18 2026
+     * Last Modified:   Jan 26 2026
     /*/
 
     # Use the Database.Drivers namespace.
@@ -16,6 +16,7 @@
     use PDOStatement;
     use ReflectionClass;
     use RuntimeException;
+    use Wingman\Database\Expressions\TableIdentifier;
     use Wingman\Database\Interfaces\SQLDialect;
     use Wingman\Database\Interfaces\SQLDriver;
 
@@ -83,6 +84,13 @@
             else $this->dialect = $dialect;
             
             $this->config = $config;
+        }
+
+        /**
+         * Destroys a PDO driver and disconnects the connection.
+         */
+        public function __destruct () {
+            $this->disconnect();
         }
 
         ############################################################################
@@ -244,6 +252,40 @@
         }
 
         /**
+         * Executes a bulk data load from a stream into a table.
+         * @param string|TableIdentifier $table The target table.
+         * @param resource $stream The data stream.
+         * @param array $fields The fields to load.
+         * @return bool Whether the bulk load was successful.
+         * @throws RuntimeException If bulk stream load is not supported for the driver.
+         */
+        public function executeBulkStream (string|TableIdentifier $table, $stream, array $fields = []) : bool {
+            if (is_string($table)) {
+                $table = TableIdentifier::from($table);
+            }
+            $this->connect();
+            $pdo = $this->connection;
+            $driverName = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        
+            if ($driverName === "pgsql") {
+                $tableName = $table->getSchema() 
+                    ? '"' . $table->getSchema() . '"."' . $table->getName() . '"' 
+                    : '"' . $table->getName() . '"';
+                return $pdo->pgsqlCopyFromFile($tableName, $stream, ',', '\\\\N', $fields ? implode(',', $fields) : null);
+            }
+        
+            if ($driverName === "mysql") {
+                $meta = stream_get_meta_data($stream);
+                $path = $meta["uri"];
+        
+                $sql = $this->dialect->compileLoadData($table, $path, $fields);
+                return $this->execute($sql) !== false;
+            }
+        
+            throw new RuntimeException("Bulk stream load not supported for driver: $driverName");
+        }
+
+        /**
          * Executes a query and returns a single row as an associative array.
          * @param string $sql The SQL query to execute.
          * @param array $bindings The bindings for the query.
@@ -361,6 +403,14 @@
          */
         public function getLastInsertId (?string $name = null) : int|string {
             return $this->connection->lastInsertId();
+        }
+
+        /**
+         * Checks whether a driver is connected to the database.
+         * @return bool Whether the driver is connected.
+         */
+        public function isConnected () : bool {
+            return $this->connection !== null;
         }
 
         /**

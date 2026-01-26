@@ -3,11 +3,14 @@
 	 * Project Name:    Wingman — Database — SQL Driver
 	 * Created by:      Angel Politis
 	 * Creation Date:   Dec 26 2025
-	 * Last Modified:   Jan 22 2025
+	 * Last Modified:   Jan 26 2025
     /*/
 
     # Use the Database.Interfaces namespace.
     namespace Wingman\Database\Interfaces;
+
+    # Import the following classes to the current scope.
+    use Wingman\Database\Expressions\TableIdentifier;
 
     /**
      * Represents an SQL driver.
@@ -53,6 +56,16 @@
          * @throws PDOException If an error occurs during execution.
          */
         public function execute (string $sql, array $bindings = []) : int;
+
+        /**
+         * Executes a bulk data load from a stream into a table.
+         * @param string|TableIdentifier $table The target table.
+         * @param resource $stream The data stream.
+         * @param array $fields The fields to load.
+         * @return bool Whether the bulk load was successful.
+         * @throws RuntimeException If bulk stream load is not supported for the driver.
+         */
+        public function executeBulkStream (string|TableIdentifier $table, $stream, array $fields = []) : bool;
 
         /**
          * Executes a query and returns a single row as an associative array.
@@ -112,6 +125,12 @@
          * @return int|string The last insert ID.
          */
         public function getLastInsertId (?string $name = null) : int|string;
+
+        /**
+         * Checks whether the driver is connected to the database.
+         * @return bool Whether the driver is connected.
+         */
+        public function isConnected () : bool;
 
         /**
          * Prepares a driver for bulk data loading.

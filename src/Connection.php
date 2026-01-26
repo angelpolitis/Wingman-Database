@@ -103,6 +103,13 @@
             $this->activeDatabase = $this->driver->getDatabase();
         }
 
+        /**
+         * Destroys the database connection.
+         */
+        public function __destruct () {
+            $this->getDriver()->disconnect();
+        }
+
         ############################################################################
         #                             PROTECTED METHODS                            #
         ############################################################################
@@ -364,29 +371,31 @@
         public function bulkLoad (string|TableIdentifier $table, array $rows, array $fields = []) : bool {
             $table = $this->normaliseTable($table);
             $dialect = $this->getDialect();
-            $tempDir = $this->config["tempDir"] ?? $this->config["temp_dir"] ?? sys_get_temp_dir();
-            $tempFile = $tempDir . DIRECTORY_SEPARATOR . uniqid("wingman_bulk_", true) . ".csv";
+            
+            $stream = fopen("php://temp/maxmemory:5242880", "w+"); 
 
             try {
-                $file = fopen($tempFile, 'w');
-                foreach ($rows as $row) {
-                    $formattedRow = array_map(fn($v) => $v === null ? $dialect->getNullInternal() : $v, $row);
-                    fputcsv($file, $formattedRow);
-                }
-                fclose($file);
+                                foreach ($rows as $row) {
+// Use dialect to format the row for CSV compatibility
+                    $formattedRow = array_map(function ($v) use ($dialect) {
+                        if ($v === null) return $dialect->getNullInternal();
+                        if (is_bool($v)) return $v ? '1' : '0';
+                        return $v;
+                    }, $row);
 
-                return $this->transact(function () use ($tempFile, $table, $fields, $dialect) {
+                    fputcsv($stream, $formattedRow);
+                }
+                
+                rewind($stream);
+
+                return $this->transact(function () use ($stream, $table, $fields) {
                     $this->driver->prepareForBulkLoad();
-                    $sql = $dialect->compileLoadData($table, $tempFile, $fields);
-                    $this->driver->execute($sql);
-                    return true;
+                    return $this->driver->executeBulkStream($table, $stream, $fields);
                 });
             }
             finally {
-                if (file_exists($tempFile)) unlink($tempFile);
+                if (is_resource($stream)) fclose($stream);
             }
-
-            return false;
         }
 
         /**
@@ -768,6 +777,14 @@
 
             # Case B: High-performance Bulk Import.
             return $this->bulkLoad($table, $rows, $fields);
+        }
+
+        /**
+         * Indicates whether a connection is open.
+         * @return bool Whether the connection is open.
+         */
+        public function isOpen () : bool {
+            return $this->driver->isConnected();
         }
 
         /**
